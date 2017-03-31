@@ -29,8 +29,8 @@ base_path = os.sep.join(base_path.split(os.sep)[0:-1])
 ## dictionary path with all the dictionary text files
 #path = os.path.join(base_path,'dictionary2')
 
-## output path for parsed echos
-#output_path = os.path.join(base_path, 'CSV')
+## output path for csv
+output_path = os.path.join(base_path, 'output\\')
 
 # db config file which has connection settings for MIMIC in a database
 db_config_file = os.path.join(base_path,'python_scripts','db-config.ini')
@@ -79,18 +79,93 @@ try:
     print("{} - Loading MIMIC-III notes into cursor.".format(dt.datetime.now()))
     cur.execute("""
 SET search_path TO mimiciii;
-select icustay_detail.*, KDIGO_CREAT.admcreat, KDIGO_CREAT.admcreattime, KDIGO_CREAT.highcreat48hr, KDIGO_CREAT.highcreattime48hr, KDIGO_CREAT.highcreat7day, KDIGO_CREAT.highcreattime7day, rrt.rrt,oasis.oasis
-from icustay_detail
+with order_icu as (
+    select icu.*
+        ,row_number() over(partition by icu.subject_id order by icu.admittime) as rn
+    from mimiciii.icustay_detail as icu
+    order by subject_id
+),
+first_icu as (
+select * 
+from order_icu
+where rn = 1
+),
+serv as(
+select ie.hadm_id, curr_service as first_service
+    , ROW_NUMBER() over (partition by ie.hadm_id order by transfertime DESC) as rn
+  from mimiciii.icustays ie
+  inner join mimiciii.services se
+    on ie.hadm_id = se.hadm_id
+    and se.transfertime < ie.intime + interval '1' day
+),
+first_serv as (
+select * 
+from serv
+where rn = 1
+
+),
+esrd_icd as(
+select  hadm_id,
+	max(case
+        when icd9_code like '5856' then 1 -- ESRD
+        else 0 end) as ESRD
+
+from diagnoses_icd 
+group by hadm_id
+),
+all_dis_creats as (
+select
+ie.SUBJECT_ID, ie.HADM_ID, ie.ICUSTAY_ID
+, le.VALUENUM as DISCREAT
+, le.CHARTTIME
+
+-- Create an index that goes from 1, 2, ..., N
+-- The index represents how early in the patient's stay a creatinine value was measured
+-- Consequently, when we later select index == 1, we only select the first (admission) creatinine
+-- In addition, we only select the first stay for the given SUBJECT_ID
+, ROW_NUMBER ()
+        OVER (PARTITION BY ie.ICUSTAY_ID
+              ORDER BY CHARTTIME DESC
+                  ) as rn
+from first_icu ie
+left join labevents le
+  on ie.SUBJECT_ID = le.SUBJECT_ID
+  and le.ITEMID = 50912
+  and le.VALUENUM is not null
+  and le.CHARTTIME between (ie.DISCHTIME - interval '96' hour) and (ie.DISCHTIME + interval '24' hour)
+),
+last_dis_creat as(
+select * 
+from all_dis_creats
+where rn  = 1
+)
+select first_icu.*, first_serv.first_service, KDIGO_CREAT.admcreat, KDIGO_CREAT.admcreattime, last_dis_creat.discreat, KDIGO_CREAT.highcreat48hr, KDIGO_CREAT.highcreattime48hr, KDIGO_CREAT.highcreat7day, KDIGO_CREAT.highcreattime7day, rrt.rrt, esrd_icd.esrd, oasis.oasis, patients.dod
+, Case WHEN first_icu.hospital_expire_flag = 1 THEN  0
+  ELSE (date_part('Day', patients.dod-first_icu.dischtime))
+  END
+as day_after_icu_discharge_death
+from first_icu
 inner join
-KDIGO_CREAT 
-on KDIGO_CREAT.icustay_id = icustay_detail.icustay_id
+mimiciii.KDIGO_CREAT 
+on KDIGO_CREAT.icustay_id = first_icu.icustay_id
 join
-rrt
+mimiciii.rrt
 on KDIGO_CREAT.icustay_id = rrt.icustay_id
 join
-oasis
-on oasis.icustay_id = icustay_detail.icustay_id
-where icustay_detail.age >=18
+mimiciii.oasis
+on oasis.icustay_id = first_icu.icustay_id
+left join mimiciii.patients
+on patients.subject_id = first_icu.subject_id
+join esrd_icd
+on first_icu.hadm_id = esrd_icd.hadm_id
+join last_dis_creat
+on last_dis_creat.subject_id = first_icu.subject_id
+join first_serv
+on first_serv.hadm_id = first_icu.hadm_id
+where first_icu.age >=18
+order by first_icu.subject_id
+
+
     """)
 except:
     print("I can't SELECT from noteevents")
@@ -100,14 +175,75 @@ rows = cur.fetchall()
 
 
 
+#aki_stage saves the stage of the AKI
 aki_stage = AutoVivification()
+#num_each_stage is the number of patients with each stage of AKI, with 0 = there is no KDIGO AKI and 4 there is no creatinine
 num_each_stage = []
-for i in range(5):
+for i in range(5): #this sets each element of num_each_stage to 0
        num_each_stage.append(0)
+num_each_recovery = []
+for i in range(6): #this sets each element of num_each_recovery
+       num_each_recovery.append(0)
+
+
+	   
+
+date_append = re.sub(r"[:|\s|\.]","-",str(datetime.datetime.now()))
+write = output_path +'AKI_'+date_append+'.txt'
+write = open(write, 'w')
+
+
+# printing out titles for columns- It will need to be modified depending what columns you are printing
+write.write(
+				'subject_id'+"\t" 
+				'hadm_id'+"\t" 
+				'icustay_id' +"\t"
+				'gender' +"\t"
+				'los_hospital' +"\t"
+				'age' +"\t"
+				'ethnicity' +"\t"
+				'admission_type'  +"\t"
+				'first_service' +"\t"
+				'hospital_expire_flag' +"\t"
+				'los_icu' +"\t"
+				'admcreat' +"\t"
+				'discreat' +"\t"
+				'highcreat48hr' +"\t"
+				'highcreat7day' +"\t"
+				'rrt' +"\t"
+				'oasis' +"\t"
+				'esrd' +"\t"
+				'day_after_icu_discharge_death' +"\t"
+				'AKI'  +"\t"
+				"AKI_discharge\n"
+)
+# This goes through all the lines of the query
+# We will first print out all the columns that we want and then we will calculate 1) level of AKI (if any) 2) death 1-30 days, 31-90, 91-365, >365
 for row in rows:
+	
+	format_str = str(row['subject_id'])+"\t" + \
+	str(row['hadm_id'])+"\t"+ \
+	str(row['icustay_id'])+"\t"+ \
+	row['gender']+"\t"+ \
+	str(row['los_hospital']) +"\t" +\
+	str(row['age']) +"\t" + \
+	row['ethnicity'] +"\t" +\
+	row['admission_type'] +"\t" +\
+	row['first_service'] +"\t" +\
+	str(row['hospital_expire_flag']) +"\t" +\
+	str(row['los_icu']) +"\t" +\
+	str(row['admcreat']) +"\t" +\
+	str(row['discreat']) +"\t" +\
+	str(row['highcreat48hr']) +"\t" +\
+	str(row['highcreat7day']) +"\t" +\
+	str(row['rrt']) +"\t" +\
+	str(row['oasis']) +"\t" +\
+	str(row['esrd']) +"\t" + \
+	str(row['day_after_icu_discharge_death']) +"\t"
+	write.write(format_str)
 	if (row['admcreat'] is None):
 		aki_stage[row['icustay_id']] = -1
-		num_each_stage[0] = num_each_stage[0] + 1
+		num_each_stage[4] = num_each_stage[4] + 1
 	else:
 		three_times_admit = 3* float(str(row['admcreat']))
 		one_five_times_admit = 1.5*float(str(row['admcreat']))
@@ -122,18 +258,62 @@ for row in rows:
 			aki_stage[row['icustay_id']] = 1
 			num_each_stage[1] = num_each_stage[1] + 1			
 		else:
-			num_each_stage[4] = num_each_stage[4] + 1
-	#print type(row['rrt'])
-print(num_each_stage[0])
-print(num_each_stage[1])
-print(num_each_stage[2])
-print(num_each_stage[3])
-print(num_each_stage[4])
+			aki_stage[row['icustay_id']] = 0
+			num_each_stage[0] = num_each_stage[0] + 1
+	write.write(str(aki_stage[row['icustay_id']]) + "\t")
+	
+	#-1 = there was admit creatinine missing, or there was AKI and discharge creatinine is missing.
+	#-1 = discharge creatinine is less than admit creatinine, but there was no AKI per KDIGO definition
+	#0 = there was no AKI
+	#1 = there was AKI then recovery
+	#2 = there was AKI and no recovery
+	#There is a thrid group that was never diagnosed with AKI, but leaves the hospital with a creatinine greater than the admit creatinine..
+	#Not sure what we should do about those. Nothing currently, they are under 0 (no AKI)
+	#If discharge creatinine was not documented and there was no AKI (per KDIGO), it will be 0
+	if (row['admcreat'] is None):
+	#if there is no admission creatinine
+		write.write("-1")
+		num_each_recovery[4] = num_each_recovery[4] + 1
+	elif(row['discreat'] is None and (aki_stage[row['icustay_id']] > 0)):
+	#if there is n discharge creatinine, but there was AKI, then -1
+		write.write("-1")
+	elif(row['discreat'] is None and (aki_stage[row['icustay_id']] == 0)):
+		write.write("0")
+	elif(row['discreat'] is not None):	
+		if(((row['discreat']>(1.25 * row['admcreat']) or (row['discreat']>=4))  and (aki_stage[row['icustay_id']] > 0)) or row['rrt']==1):
+			#if there was originally AKI and NO return to baseline (or cr >= 4)
+			write.write("2")
+			num_each_recovery[2] = num_each_recovery[2] +1
+		elif(row['discreat']<=(1.25 * row['admcreat']) and (row['discreat']<4) and (aki_stage[row['icustay_id']] > 0)): 
+			# if there was originally AKI and there was return to baseline (and cr  is less than 4)
+			write.write("1")
+			num_each_recovery[1] = num_each_recovery[1] + 1
+		elif((row['admcreat'])>(row['discreat']*1.5) and (aki_stage[row['icustay_id']] == 0)):
+			#If admission creatinine is greater than discharge creatinine * 1.5, but there was no AKI then 0- this is just here in case we want to edit in the future
+			write.write("0")
+			num_each_recovery[0] = num_each_recovery[0] +1
+		elif(aki_stage[row['icustay_id']] == 0):
+		#If there is no AKI at admission, then 0
+			write.write("0")
+
+#	elif(((row['discreat'])>(row['admcreat']*1.25)) and (aki_stage[row['icustay_id']] == 0)):
+#		num_each_recovery[3] = num_each_recovery[3] + 1
+#	else:
+#		num_each_recovery[5] = num_each_recovery[5] + 1
+	write.write("\n")
+
+print(num_each_recovery[0])
+print(num_each_recovery[1])
+print(num_each_recovery[2])
+print(num_each_recovery[3])
+print(num_each_recovery[4])
+print(num_each_recovery[5])
+#
+
+#make another column for 30 day mortality, 31-90, 91-365 days after discharge
+#get rid of people who were esrd!! find icd9 code
+# minimum creatinine lower than 25% of the admission creatinine
+#dishtime
 
 
-# get table with in hospital death flag, 
-#in hospital death flag
-#death - time
-#discharge time
-#dialysis!!
 
