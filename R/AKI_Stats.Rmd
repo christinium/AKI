@@ -1,0 +1,176 @@
+---
+title: "AKI and Outcomes"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## This loads in data, merges data
+```{r Load Data}
+AKI_rec <- read.delim("C:/Python27/git/AKI/output/AKI_2017-03-30-17-17-07-386000.txt", header=TRUE, quote="'", na.strings=c("{}", "None"))
+admit_year <-read.delim("C:/Python27/git/OtherData/mimiciii_admission_year.csv", header=TRUE, sep=",")
+AKI_rec <- merge(x=AKI_rec, y=admit_year,by.x="hadm_id", by.y="HADM_ID", all.x=TRUE)
+#names(AKI_rec) <- gsub(".x", "", names(AKI_rec) )
+```
+
+
+## Cleans data
+#### AKI - only patients with no AKI or stage 1-3 AKI are included.
+#### ESRD - only patients without ESRD are included
+#### hospital_expire_flag - Only patients who did not die in the hospital are included
+#### AKI_discharge:
+####-1 = there was admit creatinine missing, or there was AKI and discharge creatinine is missing.
+####-1 = discharge creatinine is less than admit creatinine, but there was no AKI per KDIGO definition
+####0 = there was no AKI
+####1 = there was AKI then recovery
+####2 = there was AKI and no recovery
+####There is a thrid group that was never diagnosed with AKI, but leaves the hospital with a creatinine greater than the admit creatinine..
+####Not sure what we should do about those. Nothing currently, they are under 0 (no AKI)
+####If discharge creatinine was not documented and there was no AKI (per KDIGO), it will be 0
+```{r Cleans data, gets subsets}
+df_rec <- AKI_rec
+df_rec <- df_rec[df_rec$AKI %in% c(0, 1, 2, 3) ,]
+df_rec <- df_rec[df_rec$esrd %in% c(0) ,]
+df_rec <- df_rec[df_rec$hospital_expire_flag %in% c(0) ,]
+df_rec <- df_rec[df_rec$AKI_discharge %in% c(0,1,2) ,]
+df_rec$age <-  ifelse(df_rec$age >150, 91.4, df_rec$age) 
+df_rec <- df_rec[!(df_rec$YEAR %in% c(2012)),]
+```
+
+
+## Adds death columns
+```{r adds death columns}
+df_rec["Death_1_30"] <-  ifelse((df_rec$day_after_icu_discharge_death > 0) & (df_rec$day_after_icu_discharge_death<=30), 1, 0) 
+df_rec["Death_31_90"] <-  ifelse((df_rec$day_after_icu_discharge_death > 30) & (df_rec$day_after_icu_discharge_death<=90), 1, 0) 
+df_rec["Death_91_450"] <-  ifelse((df_rec$day_after_icu_discharge_death > 90) & (df_rec$day_after_icu_discharge_death<=450), 1, 0) 
+#df_rec["No_death_by_450"] <- <-  ifelse((df_rec$day_after_icu_discharge_death>450) || df_rec$day_after_icu_discharge_death, 1, 0) 
+#is.na(day_after_icu_discharge_death) - can add it in later for logistics
+df_rec["AKI_bin"] <-  ifelse((df_rec$AKI > 0) , 1, 0) 
+```
+## Add new creatinine column
+#### If the creatinine at discharge is greater than 3.
+```{r}
+df_rec["cr_gr_3"] <- ifelse((df_rec$discreat>3) , 1, 0)
+```
+
+## AKI BIN 
+#### 
+
+```{r add discharge bin}
+#df_rec["AKI_discharge_bin"] <- ifelse(((df_rec$AKI_discharge == 0) | (df_rec$AKI_discharge == 1) ), 0, 1)
+#df_rec["AKI_discharge_bin"] <- ifelse((df_rec$AKI_discharge == 0),0, ifelse(df_rec$AKI_discharge == 1), 1, NA)
+
+#df_rec["AKI_discharge_bin"] <-  ifelse((df_rec$AKI_discharge == 0), 0, #(ifelse(df_rec$AKI_discharge == 2), 1, 2)) 
+                                   
+#                                   | (df_rec$AKI_discharge == 1) ), 0, 1)
+
+
+df_rec["AKI_discharge_bin"] <-   
+ifelse(df_rec$AKI_discharge == 0, 0,
+ifelse(df_rec$AKI_discharge == 2, 1, NA))
+
+```
+
+## Add Death Buckets
+####- If death is withink 30 days, then 1
+####- within 30-90, then 2
+####- within 90-450, then 3
+```{r death buckets}
+df_rec["Death_buckets"] <-   
+ifelse(df_rec$day_after_icu_discharge_death > 90 & (df_rec$day_after_icu_discharge_death <= 450), 3,
+ifelse(df_rec$day_after_icu_discharge_death > 30 & (df_rec$day_after_icu_discharge_death <= 90), 2,
+ifelse(df_rec$day_after_icu_discharge_death >= 0 & (df_rec$day_after_icu_discharge_death <= 30), 1, 0)))
+
+```
+
+
+```{r get table variables, categorical variables}
+
+
+listVars <- c(
+            "gender",
+            "los_hospital",
+            "age",
+            "hospital_expire_flag",
+            "los_icu",
+            "oasis",
+            "admission_type",
+            "first_service",
+            "rrt",
+            "AKI",
+#            "Death_1_30",
+#            "Death_31_90",
+#            "Death_91_450",
+            "Death_buckets",
+            "AKI_discharge_bin",
+            "cr_gr_3"
+            )
+catVars <- c("gender",
+             "hospital_expire_flag",
+             "rrt",
+             "AKI",
+             "admission_type",
+             "first_service",
+ #           "Death_1_30",
+  #          "Death_31_90",
+  #          "Death_91_450",
+             "Death_buckets",
+            "AKI_discharge_bin",
+            "cr_gr_3"
+             )
+library(dplyr)
+library(tableone)
+```
+
+
+```{r weibull distribution}
+library(muhaz)
+
+df_temp = df_rec
+df_temp["status"] <- 
+ifelse((df_temp$day_after_icu_discharge_death <= 0) , 1,
+ifelse (df_temp$day_after_icu_discharge_death <= 450, 1, 0))
+
+df_temp['status'] <-  ifelse(is.na(df_temp$day_after_icu_discharge_death), 0, df_temp$status)
+#when I tried to do a if/else, the na's didn't catch under else
+
+df_temp["mod_day_after_icu_discharge_death"] <- 
+ifelse((df_temp$day_after_icu_discharge_death <= 0) , 1, 
+ifelse(df_temp$day_after_icu_discharge_death >450, 450, 
+ifelse(df_temp$day_after_icu_discharge_death <=450, df_temp$day_after_icu_discharge_death, 450)))
+
+df_temp["mod_day_after_icu_discharge_death"] <-
+  ifelse(is.na(df_temp$day_after_icu_discharge_death), 450, df_temp$mod_day_after_icu_discharge_death)
+
+
+#fit1 <- survreg(Surv(mod_day_after_icu_discharge_death)~AKI_bin, data=df_temp, #dist="exponential")
+#summary(fit1)
+#fit1 <- survreg(Surv(mod_day_after_icu_discharge_death)~AKI_bin, data=df_temp, dist="weibull")
+#summary(fit1)
+
+#muhaz.fit = muhaz(df_temp$mod_day_after_icu_discharge_death ,  df_temp$status, max.time = 450)
+#
+#
+#muhazrate = muhaz.fit$haz.est
+#plot(muhaz.fit)
+#plot(muhazrate)
+
+#kpfit<- kphaz.fit(time = df_temp$mod_day_after_icu_discharge_death, status= df_temp$status, strata = df_temp$AKI_bin)
+#kphaz.plot(kpfit[2])
+
+AKI_bin0 = df_temp[df_temp$AKI_bin == 0,]
+AKI_bin1 = df_temp[df_temp$AKI_bin == 1,]
+
+muhaz0.fit = muhaz(AKI_bin0$mod_day_after_icu_discharge_death ,  AKI_bin0$status, max.time = 450)
+muhazrate0 = muhaz0.fit$haz.est
+#plot(muhaz.fit)
+#plot(muhazrate)
+
+muhaz1.fit = muhaz(AKI_bin1$mod_day_after_icu_discharge_death ,  AKI_bin1$status, max.time = 450)
+muhazrate1 = muhaz1.fit$haz.est
+
+plot(muhaz0.fit, col="red")
+lines(muhaz1.fit, col="blue")
+#plot(muhazrate)
+```

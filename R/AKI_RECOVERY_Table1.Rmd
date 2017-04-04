@@ -20,14 +20,14 @@ AKI_rec <- merge(x=AKI_rec, y=admit_year,by.x="hadm_id", by.y="HADM_ID", all.x=T
 #### ESRD - only patients without ESRD are included
 #### hospital_expire_flag - Only patients who did not die in the hospital are included
 #### AKI_discharge:
-#-1 = there was admit creatinine missing, or there was AKI and discharge creatinine is missing.
-#-1 = discharge creatinine is less than admit creatinine, but there was no AKI per KDIGO definition
-#0 = there was no AKI
-#1 = there was AKI then recovery
-#2 = there was AKI and no recovery
-#There is a thrid group that was never diagnosed with AKI, but leaves the hospital with a creatinine greater than the admit creatinine..
-#Not sure what we should do about those. Nothing currently, they are under 0 (no AKI)
-#If discharge creatinine was not documented and there was no AKI (per KDIGO), it will be 0
+####-1 = there was admit creatinine missing, or there was AKI and discharge creatinine is missing.
+####-1 = discharge creatinine is less than admit creatinine, but there was no AKI per KDIGO definition
+####0 = there was no AKI
+####1 = there was AKI then recovery
+####2 = there was AKI and no recovery
+####There is a thrid group that was never diagnosed with AKI, but leaves the hospital with a creatinine greater than the admit creatinine..
+####Not sure what we should do about those. Nothing currently, they are under 0 (no AKI)
+####If discharge creatinine was not documented and there was no AKI (per KDIGO), it will be 0
 ```{r Cleans data, gets subsets}
 df_rec <- AKI_rec
 df_rec <- df_rec[df_rec$AKI %in% c(0, 1, 2, 3) ,]
@@ -43,8 +43,9 @@ df_rec <- df_rec[!(df_rec$YEAR %in% c(2012)),]
 ```{r adds death columns}
 df_rec["Death_1_30"] <-  ifelse((df_rec$day_after_icu_discharge_death > 0) & (df_rec$day_after_icu_discharge_death<=30), 1, 0) 
 df_rec["Death_31_90"] <-  ifelse((df_rec$day_after_icu_discharge_death > 30) & (df_rec$day_after_icu_discharge_death<=90), 1, 0) 
-df_rec["Death_91_365"] <-  ifelse((df_rec$day_after_icu_discharge_death > 90) & (df_rec$day_after_icu_discharge_death<=365), 1, 0) 
-df_rec["Death_365"] <-  ifelse((df_rec$day_after_icu_discharge_death > 365) , 1, 0) 
+df_rec["Death_91_450"] <-  ifelse((df_rec$day_after_icu_discharge_death > 90) & (df_rec$day_after_icu_discharge_death<=450), 1, 0) 
+#df_rec["No_death_by_450"] <- <-  ifelse((df_rec$day_after_icu_discharge_death>450) || df_rec$day_after_icu_discharge_death, 1, 0) 
+#is.na(day_after_icu_discharge_death) - can add it in later for logistics
 df_rec["AKI_bin"] <-  ifelse((df_rec$AKI > 0) , 1, 0) 
 ```
 ## Add new creatinine column
@@ -54,13 +55,27 @@ df_rec["cr_gr_3"] <- ifelse((df_rec$discreat>3) , 1, 0)
 ```
 
 ## AKI BIN 
-#### Grouping 0 (recovered - discharge creathine within 25% of admit) and 3 (never had AKI per KDIGO) together to the value of 0.  If there was AKI per kdigo, and there was no recovery, then the value is 1.
+#### 
 
 ```{r add discharge bin}
-df_rec["AKI_discharge_bin"] <- ifelse(((df_rec$AKI_discharge == 0) | (df_rec$AKI_discharge == 3) ), 0, 1)
+#df_rec["AKI_discharge_bin"] <- ifelse(((df_rec$AKI_discharge == 0) | (df_rec$AKI_discharge == 1) ), 0, 1)
+#df_rec["AKI_discharge_bin"] <- ifelse((df_rec$AKI_discharge == 0),0, ifelse(df_rec$AKI_discharge == 1), 1, NA)
+
+#df_rec["AKI_discharge_bin"] <-  ifelse((df_rec$AKI_discharge == 0), 0, #(ifelse(df_rec$AKI_discharge == 2), 1, 2)) 
+                                   
+#                                   | (df_rec$AKI_discharge == 1) ), 0, 1)
+
+
+df_rec["AKI_discharge_bin"] <-   
+ifelse(df_rec$AKI_discharge == 0, 0,
+ifelse(df_rec$AKI_discharge == 2, 1, NA))
+
 ```
 
 ## Add Death Buckets
+####- If death is withink 30 days, then 1
+####- within 30-90, then 2
+####- within 90-450, then 3
 ```{r death buckets}
 df_rec["Death_buckets"] <-   
 ifelse(df_rec$day_after_icu_discharge_death > 90 & (df_rec$day_after_icu_discharge_death <= 450), 3,
@@ -86,8 +101,7 @@ listVars <- c(
             "AKI",
 #            "Death_1_30",
 #            "Death_31_90",
-#            "Death_91_365",
-#            "Death_365",
+#            "Death_91_450",
             "Death_buckets",
             "AKI_discharge_bin",
             "cr_gr_3"
@@ -100,8 +114,7 @@ catVars <- c("gender",
              "first_service",
  #           "Death_1_30",
   #          "Death_31_90",
-  #          "Death_91_365",
-  #          "Death_365",
+  #          "Death_91_450",
              "Death_buckets",
             "AKI_discharge_bin",
             "cr_gr_3"
@@ -226,10 +239,9 @@ AKI_KDIGO_1_30.lm = lm(Death_1_30 ~ AKI,  df_rec)
 summary(AKI_KDIGO_1_30.lm)
 AKI_KDIGO_31_90.lm =lm(Death_31_90 ~ AKI,  df_rec)
 summary(AKI_KDIGO_31_90.lm)
-AKI_KDIGO_91_365.lm =lm(Death_91_365 ~ AKI,  df_rec)
+AKI_KDIGO_91_365.lm =lm(Death_91_450 ~ AKI,  df_rec)
 summary(AKI_KDIGO_91_365.lm)
-AKI_KDIGO_365.lm =lm(Death_365 ~ AKI,  df_rec)
-summary(AKI_KDIGO_365.lm)
+
 ```
 
 ## Multivariate Regression for KDIGO
@@ -238,10 +250,9 @@ AKI_KDIGO_1_30.mlm = glm(Death_1_30 ~ as.factor(AKI) + oasis + gender + age + ad
 summary(AKI_KDIGO_1_30.mlm)
 AKI_KDIGO_31_90.mlm = glm(Death_31_90 ~ AKI + oasis + gender + age + admission_type ,  df_rec, family = "binomial")
 summary(AKI_KDIGO_31_90.mlm)
-AKI_KDIGO_91_365.mlm = glm(Death_91_365 ~ AKI + oasis + gender + age + admission_type ,  df_rec, family = "binomial")
-summary(AKI_KDIGO_91_365.mlm)
-AKI_KDIGO_365.mlm = glm(Death_365 ~ AKI + oasis + gender + age + admission_type ,  df_rec, family = "binomial")
-summary(AKI_KDIGO_365.mlm)
+AKI_KDIGO_91_450.mlm = glm(Death_91_450 ~ AKI + oasis + gender + age + admission_type ,  df_rec, family = "binomial")
+summary(AKI_KDIGO_91_450.mlm)
+
 ```
 
 ## Regression for Discharge
@@ -251,10 +262,8 @@ AKI_DIS_1_30.lm = lm(Death_1_30 ~ AKI_discharge_bin,  df_rec)
 summary(AKI_DIS_1_30.lm)
 AKI_DIS_31_90.lm =lm(Death_31_90 ~ AKI_discharge_bin,  df_rec)
 summary(AKI_DIS_31_90.lm)
-AKI_DIS_91_365.lm =lm(Death_91_365 ~ AKI_discharge_bin,  df_rec)
-summary(AKI_DIS_91_365.lm)
-AKI_DIS_365.lm =lm(Death_365 ~ AKI_discharge_bin,  df_rec)
-summary(AKI_DIS_365.lm)
+AKI_DIS_91_450.lm =lm(Death_91_450 ~ AKI_discharge_bin,  df_rec)
+summary(AKI_DIS_91_450.lm)
 ```
 ## Multivariate Regression for Discharge
 ```{r}
@@ -262,10 +271,9 @@ AKI_DIS_1_30.mlm = glm(Death_1_30 ~ AKI_discharge_bin + oasis + gender + age + a
 summary(AKI_DIS_1_30.mlm)
 AKI_DIS_31_90.mlm = glm(Death_31_90 ~ AKI_discharge_bin + oasis + gender + age + admission_type ,  df_rec, family = "binomial")
 summary(AKI_DIS_31_90.mlm)
-AKI_DIS_91_365.mlm = glm(Death_91_365 ~ AKI_discharge_bin + oasis + gender + age + admission_type ,  df_rec, family = "binomial")
-summary(AKI_DIS_91_365.mlm)
-AKI_DIS_365.mlm = glm(Death_365 ~ AKI_discharge_bin + oasis + gender + age + admission_type ,  df_rec, family = "binomial")
-summary(AKI_DIS_365.mlm)
+AKI_DIS_91_450.mlm = glm(Death_91_450 ~ AKI_discharge_bin + oasis + gender + age + admission_type ,  df_rec, family = "binomial")
+summary(AKI_DIS_91_450.mlm)
+
 ```
 
 ## Regression for creatinine > 3
@@ -274,10 +282,9 @@ AKI_cr_gr_3_1_30.lm = lm(Death_1_30 ~ cr_gr_3,  df_rec)
 summary(AKI_cr_gr_3_1_30.lm)
 AKI_cr_gr_3_31_90.lm =lm(Death_31_90 ~ cr_gr_3,  df_rec)
 summary(AKI_cr_gr_3_31_90.lm)
-AKI_cr_gr_3_91_365.lm =lm(Death_91_365 ~ cr_gr_3,  df_rec)
-summary(AKI_cr_gr_3_91_365.lm)
-AKI_cr_gr_3_365.lm =lm(Death_365 ~ cr_gr_3,  df_rec)
-summary(AKI_cr_gr_3_365.lm)
+AKI_cr_gr_3_91_450.lm =lm(Death_91_450 ~ cr_gr_3,  df_rec)
+summary(AKI_cr_gr_3_91_450.lm)
+
 ```
 
 ## Multiviarate Regression for creatinine > 3
@@ -286,10 +293,8 @@ AKI_cr_gr_3_1_30.mlm = glm(Death_1_30 ~ cr_gr_3 + oasis + gender + age + admissi
 summary(AKI_cr_gr_3_1_30.mlm)
 AKI_cr_gr_3_31_90.mlm = glm(Death_31_90 ~ cr_gr_3 + oasis + gender + age + admission_type ,  df_rec, family = "binomial")
 summary(AKI_cr_gr_3_31_90.mlm)
-AKI_cr_gr_3_91_365.mlm = glm(Death_91_365 ~ cr_gr_3 + oasis + gender + age + admission_type ,  df_rec, family = "binomial")
-summary(AKI_cr_gr_3_91_365.mlm)
-AKI_cr_gr_3_365.mlm = glm(Death_365 ~ cr_gr_3 + oasis + gender + age + admission_type ,  df_rec, family = "binomial")
-summary(AKI_cr_gr_3_365.mlm)
+AKI_cr_gr_3_91_450.mlm = glm(Death_91_450 ~ cr_gr_3 + oasis + gender + age + admission_type ,  df_rec, family = "binomial")
+summary(AKI_cr_gr_3_91_450.mlm)
 ```
 
 
@@ -313,12 +318,40 @@ legend("topright", legend=c("No AKI", "AKI"),fill=c("blue","red"),bty="n")
 ```
 
 ```{r weibull distribution}
+library(muhaz)
+
 df_temp = df_rec
-df_temp["mod_day_after_icu_discharge_death"] <- ifelse((df_rec$day_after_icu_discharge_death <= 0) , 1, df_rec$day_after_icu_discharge_death)
-fit1 <- survreg(Surv(mod_day_after_icu_discharge_death)~AKI_bin, data=df_temp, dist="exponential")
-summary(fit1)
-fit1 <- survreg(Surv(mod_day_after_icu_discharge_death)~AKI_bin, data=df_temp, dist="weibull")
-summary(fit1)
+df_temp["status"] <- 
+ifelse((df_temp$day_after_icu_discharge_death <= 0) , 1,
+ifelse (df_temp$day_after_icu_discharge_death <= 450, 1, 0))
+
+df_temp['status'] <-  ifelse(is.na(df_temp$day_after_icu_discharge_death), 0, df_temp$status)
+
+df_temp["mod_day_after_icu_discharge_death"] <- 
+ifelse((df_temp$day_after_icu_discharge_death <= 0) , 1, 
+ifelse(df_temp$day_after_icu_discharge_death >450, 450, 
+ifelse(df_temp$day_after_icu_discharge_death <=450, df_temp$day_after_icu_discharge_death, 450)))
+
+df_temp["mod_day_after_icu_discharge_death"] <-
+  ifelse(is.na(df_temp$day_after_icu_discharge_death), 450, df_temp$mod_day_after_icu_discharge_death)
+
+
+#fit1 <- survreg(Surv(mod_day_after_icu_discharge_death)~AKI_bin, data=df_temp, #dist="exponential")
+#summary(fit1)
+#fit1 <- survreg(Surv(mod_day_after_icu_discharge_death)~AKI_bin, data=df_temp, dist="weibull")
+#summary(fit1)
+
+muhaz.fit = muhaz(df_temp$mod_day_after_icu_discharge_death ,  df_temp$status, max.time = 450)
+
+
+muhazrate = muhaz.fit$haz.est
+plot(muhaz.fit)
+plot(muhazrate)
+
+kpfit<- kphaz.fit(df_temp$mod_day_after_icu_discharge_death, df_temp$status, df_temp$AKI_bin)
+
+kphaz.plot(kpfit)
+
 
 ```
 
